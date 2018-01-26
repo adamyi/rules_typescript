@@ -20,24 +20,18 @@ load(":common/compilation.bzl", "COMMON_ATTRIBUTES", "compile_ts", "ts_providers
 load(":executables.bzl", "get_tsc")
 load(":common/tsconfig.bzl", "create_tsconfig")
 load(":ts_config.bzl", "TsConfigInfo")
+load("//:internal/common/collect_es6_sources.bzl", "collect_es6_sources")
+load("@io_bazel_rules_closure//closure:defs.bzl", "closure_js_binary")    
 
 def _compile_action(ctx, inputs, outputs, tsconfig_file):
   externs_files = []
   action_outputs = []
   for output in outputs:
-    if output.basename.endswith(".externs.js"):
-      externs_files.append(output)
-    elif output.basename.endswith(".es5.MF"):
+    if output.basename.endswith(".es5.MF"):
       ctx.file_action(output, content="")
     else:
       action_outputs.append(output)
 
-  # TODO(plf): For now we mock creation of files other than {name}.js.
-  for externs_file in externs_files:
-    ctx.file_action(output=externs_file, content="")
-
-  # A ts_library that has only .d.ts inputs will have no outputs,
-  # therefore there are no actions to execute
   if not action_outputs:
     return struct()
 
@@ -195,3 +189,45 @@ def tsc_library(**kwargs):
       compiler = "//internal/tsc_wrapped:tsc",
       node_modules = "@build_bazel_rules_typescript_deps//:node_modules",
       **kwargs)
+
+# ******************* #
+# closure_ts_binary   #
+# ******************* #
+def _collect_es6_sources_impl(ctx):
+  """Rule which wraps the collect_es6_sources action for rules_closure.
+
+  Args:
+    ctx: the context.
+
+  Returns:
+    A closure_js_library with the rerooted files.
+  """
+  collected_es6_sources = collect_es6_sources(ctx)
+
+  js_module_roots = depset()
+  for prod_file in collected_es6_sources:
+    if "node_modules/" in prod_file.dirname:
+      js_module_roots += [prod_file.dirname[:prod_file.dirname.find('node_modules/')]]
+
+  return struct(
+    files = collected_es6_sources,
+    closure_js_library = struct(
+      srcs = collected_es6_sources,
+      js_module_roots = js_module_roots,
+    )
+  )
+
+_collect_es6_sources = rule(
+    attrs = {"deps": attr.label_list(mandatory = True)},
+    implementation = _collect_es6_sources_impl,
+)
+
+def closure_ts_binary(name, deps, **kwargs):
+  _collect_es6_sources_label = name + "_collect_es6_sources"
+  _collect_es6_sources(name = _collect_es6_sources_label, deps = deps)
+
+  closure_js_binary(
+    name = name,
+    deps = [":" + _collect_es6_sources_label],
+    **kwargs
+  )  
